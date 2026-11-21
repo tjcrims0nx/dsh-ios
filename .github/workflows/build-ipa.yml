@@ -35,7 +35,17 @@ jobs:
           echo "/opt/homebrew/opt/lld/bin" >> "$GITHUB_PATH"
           gem install xcodeproj --no-document || sudo gem install xcodeproj --no-document
 
+      - name: Cache emulator and rootfs
+        id: build-cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            ish-arm64/build-arm64-release
+            build/root.tar.gz
+          key: dsh-v1-${{ hashFiles('ish-arm64/**', 'rootfs/staging/package.json', 'rootfs/staging/package-lock.json', 'scripts/build-rootfs.sh', 'Makefile') }}
+
       - name: Build emulator
+        if: steps.build-cache.outputs.cache-hit != 'true'
         env:
           CFLAGS: -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0
           CXXFLAGS: -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0
@@ -45,6 +55,7 @@ jobs:
           ls -lh ish-arm64/build-arm64-release/ish ish-arm64/build-arm64-release/tools/fakefsify
 
       - name: Build guest rootfs
+        if: steps.build-cache.outputs.cache-hit != 'true'
         run: |
           # The emulator copies the host hostname into a 65-byte guest field;
           # the runner hostname is longer than that and aborts the emulator.
@@ -88,19 +99,19 @@ jobs:
         run: |
           xcodebuild -project DSH.xcodeproj -target DSH -configuration Release \
             -destination 'generic/platform=iOS' \
-            -derivedDataPath build/derived \
             CODE_SIGN_STYLE=Manual \
             CODE_SIGN_IDENTITY="iPhone Developer: Created via API (K4WFUF47X2)" \
             PROVISIONING_PROFILE_SPECIFIER="00008103-000149C821DB001EI3K892_dev" \
             PRODUCT_BUNDLE_IDENTIFIER=app.jackfruit686.pisces8360 \
             DSH_DEVELOPMENT_TEAM=T7N5A7X979 \
             build
-          ls -lh build/derived/Build/Products/Release-iphoneos/DSH.app
+          ls -lh ~/Library/Developer/Xcode/DerivedData/DSH-*/Build/Products/Release-iphoneos/DSH.app
 
       - name: Package IPA
         run: |
+          APP=$(ls -dt ~/Library/Developer/Xcode/DerivedData/DSH-*/Build/Products/Release-iphoneos/DSH.app | head -1)
           mkdir -p Payload
-          cp -r build/derived/Build/Products/Release-iphoneos/DSH.app Payload/
+          cp -r "$APP" Payload/
           zip -r -y DSH-signed.ipa Payload
           unzip -l DSH-signed.ipa
           ls -lh DSH-signed.ipa
