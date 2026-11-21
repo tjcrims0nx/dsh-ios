@@ -1,11 +1,7 @@
-# Build a signed DSH IPA on a macOS runner and upload it as an artifact.
-# Signing uses the developer identity and profile stored as repo secrets
-# (DEV_P12_B64, DEV_PROVISION_B64, P12_PASSWORD). The profile is a
-# development profile for one iPad (UDID 00008103-000149C821DB001E) under
-# bundle id app.jackfruit686.pisces8360, team T7N5A7X979. It carries the
-# HealthKit entitlement but not Private Cloud Compute, so that entitlement
-# is removed from app/DSH.entitlements before the build.
-name: Build signed IPA
+# Build an UNSIGNED DSH IPA on a macOS runner and upload it as an artifact.
+# No signing here — Taylor signs it himself. The bundle id is set to his
+# profile's id (app.jackfruit686.pisces8360) so it lines up when he signs.
+name: Build unsigned IPA
 
 on:
   workflow_dispatch:
@@ -67,43 +63,12 @@ jobs:
       - name: Regenerate Xcode project
         run: make project
 
-      - name: Match entitlements to profile
-        run: |
-          # The dev profile carries HealthKit but not Private Cloud Compute.
-          # (plutil splits key paths on dots, so use PlistBuddy for this key.)
-          if /usr/libexec/PlistBuddy -c "Print :com.apple.developer.private-cloud-compute" app/DSH.entitlements >/dev/null 2>&1; then
-            /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.private-cloud-compute" app/DSH.entitlements
-          fi
-          cat app/DSH.entitlements
-
-      - name: Install signing identity
-        env:
-          P12_B64: ${{ secrets.DEV_P12_B64 }}
-          PROVISION_B64: ${{ secrets.DEV_PROVISION_B64 }}
-          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
-        run: |
-          echo "$P12_B64" | base64 --decode > /tmp/dev.p12
-          echo "$PROVISION_B64" | base64 --decode > /tmp/dev.mobileprovision
-          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
-          cp /tmp/dev.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/df707424-2028-4b30-b1ef-6c5049742c0c.mobileprovision
-          security create-keychain -p "" build.keychain
-          security set-keychain-settings -lut 3600 build.keychain
-          security unlock-keychain -p "" build.keychain
-          security import /tmp/dev.p12 -k build.keychain -P "$P12_PASSWORD" -T /usr/bin/codesign
-          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" build.keychain
-          security list-keychains -s build.keychain
-          security find-identity -v -p codesigning build.keychain
-          rm /tmp/dev.p12 /tmp/dev.mobileprovision
-
-      - name: Build signed app
+      - name: Build app (unsigned)
         run: |
           xcodebuild -project DSH.xcodeproj -scheme DSH -configuration Release \
             -destination 'generic/platform=iOS' \
-            CODE_SIGN_STYLE=Manual \
-            CODE_SIGN_IDENTITY="iPhone Developer: Created via API (K4WFUF47X2)" \
-            PROVISIONING_PROFILE_SPECIFIER="00008103-000149C821DB001EI3K892_dev" \
+            CODE_SIGNING_ALLOWED=NO \
             PRODUCT_BUNDLE_IDENTIFIER=app.jackfruit686.pisces8360 \
-            DSH_DEVELOPMENT_TEAM=T7N5A7X979 \
             build
           ls -lh build/Release-iphoneos/DSH.app 2>/dev/null || ls -lh ~/Library/Developer/Xcode/DerivedData/DSH-*/Build/Products/Release-iphoneos/DSH.app
 
@@ -112,13 +77,13 @@ jobs:
           APP=$(ls -dt build/Release-iphoneos/DSH.app ~/Library/Developer/Xcode/DerivedData/DSH-*/Build/Products/Release-iphoneos/DSH.app 2>/dev/null | head -1)
           mkdir -p Payload
           cp -r "$APP" Payload/
-          zip -r -y DSH-signed.ipa Payload
-          unzip -l DSH-signed.ipa
-          ls -lh DSH-signed.ipa
+          zip -r -y DSH-unsigned.ipa Payload
+          unzip -l DSH-unsigned.ipa
+          ls -lh DSH-unsigned.ipa
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: DSH-signed-ipa
-          path: DSH-signed.ipa
+          name: DSH-unsigned-ipa
+          path: DSH-unsigned.ipa
           if-no-files-found: error
