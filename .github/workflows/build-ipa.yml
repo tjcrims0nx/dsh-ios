@@ -1,0 +1,67 @@
+# Build an unsigned DSH IPA on a macOS runner (no Mac, no signing identity).
+# The IPA is unsigned: install it with AltStore / SideStore, which re-sign
+# with a free Apple ID. HealthKit is not stripped here: with
+# CODE_SIGNING_ALLOWED=NO no entitlements are embedded, so a free-account
+# re-sign is not blocked by the HealthKit entitlement.
+name: Build unsigned IPA
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: macos-26
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Select Xcode 27
+        run: |
+          ls /Applications | grep -i xcode || true
+          XCODE27=$(ls -d /Applications/Xcode_27*.app 2>/dev/null | sort -V | tail -1)
+          if [ -n "$XCODE27" ]; then
+            echo "Selecting $XCODE27"
+            sudo xcode-select -s "$XCODE27/Contents/Developer"
+          fi
+          xcodebuild -version
+          node --version
+          npm --version
+
+      - name: Install build tools
+        run: |
+          brew install meson ninja lld
+          echo "/opt/homebrew/opt/lld/bin" >> "$GITHUB_PATH"
+          gem install xcodeproj --no-document || sudo gem install xcodeproj --no-document
+
+      - name: Build emulator
+        run: make emulator
+
+      - name: Build guest rootfs
+        run: make rootfs
+
+      - name: Regenerate Xcode project
+        run: make project
+
+      - name: Build unsigned app
+        run: |
+          xcodebuild -project DSH.xcodeproj -scheme DSH -configuration Release \
+            -destination 'generic/platform=iOS' \
+            -derivedDataPath build/derived \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" \
+            build
+          ls -lh build/derived/Build/Products/Release-iphoneos/DSH.app
+
+      - name: Package IPA
+        run: |
+          mkdir -p Payload
+          cp -r build/derived/Build/Products/Release-iphoneos/DSH.app Payload/
+          zip -r -y DSH-unsigned.ipa Payload
+          unzip -l DSH-unsigned.ipa
+          ls -lh DSH-unsigned.ipa
+
+      - name: Upload IPA
+        uses: actions/upload-artifact@v4
+        with:
+          name: DSH-unsigned-ipa
+          path: DSH-unsigned.ipa
+          if-no-files-found: error
