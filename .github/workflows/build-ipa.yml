@@ -1,9 +1,11 @@
-# Build an unsigned DSH IPA on a macOS runner (no Mac, no signing identity).
-# The IPA is unsigned: install it with AltStore / SideStore, which re-sign
-# with a free Apple ID. HealthKit is not stripped here: with
-# CODE_SIGNING_ALLOWED=NO no entitlements are embedded, so a free-account
-# re-sign is not blocked by the HealthKit entitlement.
-name: Build unsigned IPA
+# Build a signed DSH IPA on a macOS runner and upload it as an artifact.
+# Signing uses the developer identity and profile stored as repo secrets
+# (DEV_P12_B64, DEV_PROVISION_B64, P12_PASSWORD). The profile is a
+# development profile for one iPad (UDID 00008103-000149C821DB001E) under
+# bundle id app.jackfruit686.pisces8360, team T7N5A7X979. It carries the
+# HealthKit entitlement but not Private Cloud Compute, so that entitlement
+# is removed from app/DSH.entitlements before the build.
+name: Build signed IPA
 
 on:
   workflow_dispatch:
@@ -29,12 +31,15 @@ jobs:
 
       - name: Install build tools
         run: |
-          brew install meson ninja lld
+          brew install meson ninja lld libarchive
           echo "/opt/homebrew/opt/lld/bin" >> "$GITHUB_PATH"
           gem install xcodeproj --no-document || sudo gem install xcodeproj --no-document
 
       - name: Build emulator
-        run: make emulator
+        run: |
+          make emulator
+          ninja -C ish-arm64/build-arm64-release tools/fakefsify
+          ls -lh ish-arm64/build-arm64-release/ish ish-arm64/build-arm64-release/tools/fakefsify
 
       - name: Build guest rootfs
         run: make rootfs
@@ -42,12 +47,41 @@ jobs:
       - name: Regenerate Xcode project
         run: make project
 
-      - name: Build unsigned app
+      - name: Match entitlements to profile
         run: |
-          xcodebuild -project DSH.xcodeproj -scheme DSH -configuration Release \
+          # The dev profile carries HealthKit but not Private Cloud Compute.
+          plutil -remove com.apple.developer.private-cloud-compute app/DSH.entitlements
+          cat app/DSH.entitlements
+
+      - name: Install signing identity
+        env:
+          P12_B64: ${{ secrets.DEV_P12_B64 }}
+          PROVISION_B64: ${{ secrets.DEV_PROVISION_B64 }}
+          P12_PASSWORD: ${{ secrets.P12_PASSWORD }}
+        run: |
+          echo "$P12_B64" | base64 --decode > /tmp/dev.p12
+          echo "$PROVISION_B64" | base64 --decode > /tmp/dev.mobileprovision
+          mkdir -p ~/Library/MobileDevice/Provisioning\ Profiles
+          cp /tmp/dev.mobileprovision ~/Library/MobileDevice/Provisioning\ Profiles/df707424-2028-4b30-b1ef-6c5049742c0c.mobileprovision
+          security create-keychain -p "" build.keychain
+          security set-keychain-settings -lut 3600 build.keychain
+          security unlock-keychain -p "" build.keychain
+          security import /tmp/dev.p12 -k build.keychain -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "" build.keychain
+          security list-keychains -s build.keychain
+          security find-identity -v -p codesigning build.keychain
+          rm /tmp/dev.p12 /tmp/dev.mobileprovision
+
+      - name: Build signed app
+        run: |
+          xcodebuild -project DSH.xcodeproj -target DSH -configuration Release \
             -destination 'generic/platform=iOS' \
             -derivedDataPath build/derived \
-            CODE_SIGNING_ALLOWED=NO CODE_SIGN_IDENTITY="" \
+            CODE_SIGN_STYLE=Manual \
+            CODE_SIGN_IDENTITY="iPhone Developer: Created via API (K4WFUF47X2)" \
+            PROVISIONING_PROFILE_SPECIFIER="00008103-000149C821DB001EI3K892_dev" \
+            PRODUCT_BUNDLE_IDENTIFIER=app.jackfruit686.pisces8360 \
+            DSH_DEVELOPMENT_TEAM=T7N5A7X979 \
             build
           ls -lh build/derived/Build/Products/Release-iphoneos/DSH.app
 
@@ -55,13 +89,13 @@ jobs:
         run: |
           mkdir -p Payload
           cp -r build/derived/Build/Products/Release-iphoneos/DSH.app Payload/
-          zip -r -y DSH-unsigned.ipa Payload
-          unzip -l DSH-unsigned.ipa
-          ls -lh DSH-unsigned.ipa
+          zip -r -y DSH-signed.ipa Payload
+          unzip -l DSH-signed.ipa
+          ls -lh DSH-signed.ipa
 
       - name: Upload IPA
         uses: actions/upload-artifact@v4
         with:
-          name: DSH-unsigned-ipa
-          path: DSH-unsigned.ipa
+          name: DSH-signed-ipa
+          path: DSH-signed.ipa
           if-no-files-found: error
