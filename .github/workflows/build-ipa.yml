@@ -36,13 +36,22 @@ jobs:
           gem install xcodeproj --no-document || sudo gem install xcodeproj --no-document
 
       - name: Build emulator
+        env:
+          CFLAGS: -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0
+          CXXFLAGS: -U_FORTIFY_SOURCE -D_FORTIFY_SOURCE=0
         run: |
           make emulator
           ninja -C ish-arm64/build-arm64-release tools/fakefsify
           ls -lh ish-arm64/build-arm64-release/ish ish-arm64/build-arm64-release/tools/fakefsify
 
       - name: Build guest rootfs
-        run: make rootfs
+        run: |
+          # The emulator copies the host hostname into a 65-byte guest field;
+          # the runner hostname is longer than that and aborts the emulator.
+          sudo hostname ish
+          sudo scutil --set HostName ish || true
+          hostname
+          make rootfs
 
       - name: Regenerate Xcode project
         run: make project
