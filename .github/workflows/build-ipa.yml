@@ -59,7 +59,10 @@ jobs:
       - name: Match entitlements to profile
         run: |
           # The dev profile carries HealthKit but not Private Cloud Compute.
-          plutil -remove com.apple.developer.private-cloud-compute app/DSH.entitlements
+          # (plutil splits key paths on dots, so use PlistBuddy for this key.)
+          if /usr/libexec/PlistBuddy -c "Print :com.apple.developer.private-cloud-compute" app/DSH.entitlements >/dev/null 2>&1; then
+            /usr/libexec/PlistBuddy -c "Delete :com.apple.developer.private-cloud-compute" app/DSH.entitlements
+          fi
           cat app/DSH.entitlements
 
       - name: Install signing identity
